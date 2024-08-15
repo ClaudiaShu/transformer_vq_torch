@@ -238,10 +238,7 @@ class LearnableVQ(nn.Module):
         
         r = F.one_hot(shortcodes, num_classes=n_code).to(vecs.dtype)
         loss_mask = vq_spec.loss_mask
-        if loss_mask.dim() == 3:  
-            loss_mask = loss_mask.squeeze(1)
-        else:
-            loss_mask = loss_mask
+        loss_mask = loss_mask
         r *= loss_mask.unsqueeze(1).unsqueeze(-1)
         
         c_sum_hat = vq_spec.n_device * vq_spec.n_block_per_update * torch.einsum("bhts,bhtd->hsd", r, vecs)
@@ -460,10 +457,7 @@ class VQAttention(nn.Module):
         return result
 
     def get_q(self, x_tilde):
-        if x_tilde.dim() == 4:  
-            x_tilde = x_tilde.squeeze(1)
-        else:
-            x_tilde = x_tilde
+        x_tilde = x_tilde
         bsz, present_len, _ = x_tilde.shape
         q = self.q_proj(x_tilde)
         q = q.view(bsz, present_len, self.config.n_head, self.config.d_k)
@@ -472,10 +466,7 @@ class VQAttention(nn.Module):
         return q
 
     def get_kvg(self, x_tilde):
-        if x_tilde.dim() == 4:  
-            x_tilde = x_tilde.squeeze(1)
-        else:
-            x_tilde = x_tilde
+        x_tilde = x_tilde
         bsz, present_len, *_ = x_tilde.shape
         kvg = self.kvg_proj(x_tilde)
         splits = [self.config.d_k, self.config.d_v, kvg.shape[-1]-self.config.d_k-self.config.d_v]
@@ -527,10 +518,7 @@ class VQAttention(nn.Module):
             'V': self.config.d_v
         }
 
-        if present_doc_ids.dim() == 3:  
-            present_doc_ids = present_doc_ids.squeeze(1)
-        else:
-            present_doc_ids = present_doc_ids
+        present_doc_ids = present_doc_ids
         
         vq_output_dict = self.quantizer(present_k, vq_spec=vq_spec)
         present_z = vq_output_dict["shortcodes"]
