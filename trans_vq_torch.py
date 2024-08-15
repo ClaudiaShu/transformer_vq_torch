@@ -453,23 +453,6 @@ class VQAttention(nn.Module):
             }
         }
 
-    # @staticmethod
-    # def rel_shift(x):
-    #     *leading_shape, present_len, past_len = x.shape
-    #     x = F.pad(x, (0, 0, 0, 1))
-    #     x = x.view(*leading_shape, past_len + 1, present_len)
-    #     x = x[..., 1:, :]
-    #     x = x.view(*leading_shape, present_len, past_len)
-    #     return x
-    # @staticmethod
-    # def rel_shift(x):
-    #     *leading_shape, present_len, past_len = x.shape
-    #     pad_spec = [0, 0] * len(leading_shape) + [0, 1, 0, 0]
-    #     x = torch.nn.functional.pad(x, pad_spec, mode='constant', value=0)
-    #     x = x.view(*leading_shape, past_len + 1, present_len)
-    #     x = x[..., 1:, :]
-    #     x = x.view(*leading_shape, present_len, past_len)
-    #     return x
     def rel_shift(x):
         *leading_shape, present_len, past_len = x.shape
         x = torch.nn.functional.pad(x, (0, 1, 0, 0))
@@ -736,9 +719,8 @@ class TransformerLayer(nn.Module):
         ]
 
     def forward(self, x, doc_ids, state, vq_spec):
-        n_block, batch_size, *_ = x.shape
+        batch_size, *_ = x.shape
         dims = {
-            'K': n_block,
             'B': batch_size,
             'L': self.block_len,
             'D': self.d_model,
@@ -746,19 +728,19 @@ class TransformerLayer(nn.Module):
         
         state1, state2 = state
 
-        assert x.shape == (dims['K'], dims['B'], dims['L'], dims['D'])
+        assert x.shape == (dims['B'], dims['L'], dims['D'])
         
         attn1_input_dict = {'input_features': x, 'doc_ids': doc_ids, 'vq_spec': vq_spec}
         attn1_state, attn1_output_dict = self.scanned_attn1(state1, attn1_input_dict)
-        r1 = attn1_output_dict.pop("res").unsqueeze(1)
-        assert r1.shape == (dims['K'], dims['B'], dims['L'], dims['D'])
+        r1 = attn1_output_dict.pop("res")
+        assert r1.shape == (dims['B'], dims['L'], dims['D'])
         x += self.droplyr1(r1)
         # attn1_output_dict = {k: torch.mean(v, dim=0) for k, v in attn1_output_dict.items()}
 
         attn2_input_dict = {'input_features': x, 'doc_ids': doc_ids, 'vq_spec': vq_spec}
         attn2_state, attn2_output_dict = self.scanned_attn2(state2, attn2_input_dict)
-        r2 = attn2_output_dict.pop("res").unsqueeze(1)
-        assert r2.shape == (dims['K'], dims['B'], dims['L'], dims['D'])
+        r2 = attn2_output_dict.pop("res")
+        assert r2.shape == (dims['B'], dims['L'], dims['D'])
         x += self.droplyr2(r2)
         # attn2_output_dict = {k: torch.mean(v, dim=0) for k, v in attn2_output_dict.items()}
 
@@ -821,38 +803,6 @@ class Transformer(nn.Module):
             'V': self.n_vocab,
         }
 
-    def get_blocks_from_sequence(self, x):
-        batch_size, present_len, *suffix = x.shape
-        n_block = present_len // self.block_len
-        x = x.reshape(batch_size, n_block, self.block_len, *suffix)
-        suffix_axes = list(range(3, x.ndim))
-        x = x.permute(1, 0, 2, *suffix_axes)
-        return x
-
-    def get_sequence_from_blocks(self, x):
-        num_block, batch_size, block_len, *suffix = x.shape
-        suffix_axes = list(range(3, x.ndim))
-        x = x.permute(1, 0, 2, *suffix_axes)
-        x = x.reshape(batch_size, num_block * block_len, *suffix)
-        return x
-
-    def get_blocks_of_vq_spec(self, vq_spec):
-        if vq_spec is None:
-            return None
-
-        assert vq_spec.loss_mask.dim() == 2
-        n_block = vq_spec.loss_mask.shape[1] // self.block_len
-
-        def expand_and_tile(array):
-            mult = [n_block] + [1 for _ in range(array.dim())]
-            return array.unsqueeze(0).expand(mult)
-
-        return VQSpec.create(
-            n_device=expand_and_tile(vq_spec.n_device),
-            n_block_per_update=expand_and_tile(vq_spec.n_block_per_update),
-            loss_mask=vq_spec.loss_mask.view(-1, n_block, self.block_len).transpose(0, 1),
-        )
-
     @staticmethod
     def maybe_aggregate(accumulator_dict, new_dict):
         if not accumulator_dict:
@@ -902,19 +852,16 @@ class Transformer(nn.Module):
             offset = state[0][0]["pos_offset"]
             x += self.position_embedder(length=present_len, offset=offset)
         x = self.dropemb(x)
-        x = self.get_blocks_from_sequence(x)
-        doc_ids = self.get_blocks_from_sequence(doc_ids)
-        vq_spec = self.get_blocks_of_vq_spec(vq_spec)
-        assert x.shape == (dims['K'], dims['B'], dims['L'], dims['D'])
+        assert x.shape == (dims['B'], dims['L'], dims['D'])
         for i in range(self.n_layer):
             layer_output_dict = self.transformer_layers[i](
                 x=x, doc_ids=doc_ids, state=state[i], vq_spec=vq_spec
             )
             new_state.append(layer_output_dict.pop("attn_state"))
             x = layer_output_dict.pop("output_features")
-            assert x.shape == (dims['K'], dims['B'], dims['L'], dims['D'])
+            assert x.shape == (dims['B'], dims['L'], dims['D'])
             aux = Transformer.maybe_aggregate(aux, layer_output_dict)
-        x = self.get_sequence_from_blocks(x)
+
         aux = Transformer.average_layer_metrics(aux, self.n_layer)
         if self.e_preln:
             x = self.out_ln(x)
@@ -923,60 +870,6 @@ class Transformer(nn.Module):
         x = F.log_softmax(x, dim=-1)
         assert x.shape == (dims['B'], dims['P'], dims['V'])
         return dict(logprobs=x, attn_state=new_state, **aux)
-    
-@dataclass
-class Config:
-    param_dtype: Dtype
-    no_emb: bool
-    pe_abs: bool
-    n_vocab: int
-    d_model: int
-    n_head: int
-    d_k: int
-    d_v: int
-    n_code: int
-    block_len: int
-    mem_len: int
-    n_layer: int
-    p_droplyr: float
-    p_dropemb: float
-    p_dropsin: float
-    p_dropres: float
-    p_dropscale: float
-    p_dropattn: float
-    p_dropff: float
-    p_dropact: float
-    p_droplyr: float
-    p_drophead: float
-    p_dropblock: float
-    p_dropatt: float
-    p_dropmem: float
-    p_dropvq: float
-    p_dropq: float
-    p_dropk: float
-    p_dropv: float
-    p_dropg: float
-    p_dropxl: float
-    p_dropcache: float
-    p_dropupper: float
-    p_droplower: float
-    p_dropdoc: float
-    dtype: Dtype
-    is_train: bool
-    global_batch_size: int
-    sequence_len: int
-    block_len: int
-    update_len: int
-    grad_thru_cache: bool
-    agg_cache: bool
-    d_ff: int
-    pe_lam: float
-    p_nucleus: float
-    c_beta: float
-    c_gamma: float
-    e_tie: bool
-    e_preln: bool
-    e_scale: float
 
 
 # Define the configuration for the Transformer model
@@ -1035,8 +928,8 @@ config = {
     }
 
 configs = TransformerConfig.create(**config)
-# config_instance = Config(**configs)
-# Create the Transformer model
+
+# Create the model
 model = Transformer(configs)
 
 # Define the input tensors
@@ -1054,6 +947,6 @@ output = model(inputs, doc_ids, state, vq_spec)
 print(output.keys())
 # dict_keys(['logprobs', 'attn_state', 'metrics', 'l_commit', 'l_codebook'])
 print(output['logprobs'].shape)
-
+print(output['attn_state'][0][0]['xlcache']['z'].shape)
 
 
