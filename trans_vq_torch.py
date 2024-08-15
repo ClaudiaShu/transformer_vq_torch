@@ -73,7 +73,8 @@ def get_codewords(shortcodes, codebook):
     assert codebook.shape == (i, H, S, d)
 
     code_indices = shortcodes.expand(-1, -1, -1, d)
-    cz = torch.gather(codebook, dim=2, index=code_indices)
+    codebook_expanded = codebook.expand(B, -1, -1, -1)
+    cz = torch.gather(codebook_expanded, dim=2, index=code_indices)
     return cz
 
 @dataclasses.dataclass
@@ -888,11 +889,11 @@ configs = TransformerConfig.create(**config)
 
 # Create the model
 model = Transformer(configs)
-
+batch_size = 8
 # Define the input tensors
-inputs = torch.zeros([1, configs.block_len], dtype=torch.int32)
-doc_ids = torch.zeros([1, configs.block_len], dtype=torch.int32)
-state = Transformer.initial_state(config=configs, batch_size=1)
+inputs = torch.zeros([batch_size, configs.block_len], dtype=torch.int32) # Assume inputs are indices
+doc_ids = torch.zeros([batch_size, configs.block_len], dtype=torch.int32)
+state = Transformer.initial_state(config=configs, batch_size=batch_size)
 vq_spec = VQSpec.create(
     n_device=torch.tensor([1]),
     n_block_per_update=torch.tensor([1]),
