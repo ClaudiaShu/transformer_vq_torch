@@ -38,15 +38,12 @@ def get_sinusoid_embs(length, width, lam, flip, start=0):
     return cat
 
 def get_shortcodes(vecs, codebook):
-    # Extract dimensions
     B, H, L, K = vecs.shape
     S = codebook.shape[1]
     
-    # Ensure dimensions match
     assert vecs.shape == (B, H, L, K)
     assert codebook.shape == (H, S, K)
 
-    # Compute squared Euclidean distance
     vecs_sq = torch.sum(vecs ** 2, dim=-1, keepdim=True)  # B, H, L, 1
     codebook_sq = torch.sum(codebook ** 2, dim=-1, keepdim=False)  # H, S
 
@@ -57,10 +54,8 @@ def get_shortcodes(vecs, codebook):
         + codebook_sq.unsqueeze(0).unsqueeze(2)
     )  # B, H, L, S
     
-    # Find the index of the closest codebook entry
     z = torch.argmin(diffs2, dim=-1)  # B, H, L
     
-    # Compute the squared distance to the nearest codebook vector
     errs2 = torch.min(diffs2, dim=-1).values
     errs2 = torch.relu(errs2)  # Ensure non-negative values
     
@@ -79,7 +74,6 @@ def get_codewords(shortcodes, codebook):
 
     code_indices = shortcodes.expand(-1, -1, -1, d)
     cz = torch.gather(codebook, dim=2, index=code_indices)
-    # cz = jnp.take_along_axis(codebook, indices=shortcodes, axis=2)
     return cz
 
 @dataclasses.dataclass
@@ -122,17 +116,14 @@ class TransformerConfig:
 
     @classmethod
     def create(cls, **kwargs):
-        # Create a dictionary of the dataclass fields
         signature = {field.name: field.type for field in dataclasses.fields(TransformerConfig)}
         filtered = {k: v for k, v in kwargs.items() if k in signature}
 
-        # Convert dtype strings to torch.dtypes
         if isinstance(filtered.get("param_dtype"), str):
             filtered["param_dtype"] = torch.dtype(filtered["param_dtype"])
         if isinstance(filtered.get("dtype"), str):
             filtered["dtype"] = torch.dtype(filtered["dtype"])
 
-        # Convert boolean-like integers to actual boolean values
         for k, v in filtered.items():
             if signature[k] is bool and v in {0, 1}:
                 filtered[k] = bool(v)
@@ -153,11 +144,8 @@ class VQSpec:
 
     @classmethod
     def create(cls, **kwargs):
-        # Define the expected fields based on the VQSpec dataclass
         signature = {field.name: field.type for field in dataclasses.fields(cls)}
-        # Filter the provided kwargs to match the expected fields
         filtered = {k: v for k, v in kwargs.items() if k in signature}
-        # Create and return an instance of VQSpec with the filtered arguments
         return cls(**filtered)
 
 class ScaledSin(nn.Module):
@@ -190,10 +178,8 @@ class Embeddings(nn.Module):
         self.config = config
         self.apply_config()
         
-        # Embedding matrix
         self.embs = nn.Parameter(torch.randn(self.n_vocab, self.d_model) * self.e_init)
         
-        # Bias term for output
         self.bias_out = nn.Parameter(torch.randn(self.n_vocab) * self.b_init)
 
     def apply_config(self):
@@ -286,17 +272,12 @@ class LearnableVQ(nn.Module):
 
     @staticmethod
     def get_quantization_metrics(vecs, vecs_hat, errs2, c_sum, c_count, dtype):
-        # Extract dimensions
         n_head, n_code = c_count.shape[0], c_count.shape[1]
         eps, errmin, errmax, maskval = 1e-2, 0e1, 1e1, 1e30
         
-        # Avoid division by zero
         c_count = torch.clamp(c_count, min=eps)
-        
-        # Compute centroids
         c = c_sum / c_count[..., None]
         
-        # Compute norms
         c_norms = torch.clamp(torch.norm(c, dim=-1), min=eps)
         c_normed = c / c_norms[..., None]
         
@@ -304,15 +285,12 @@ class LearnableVQ(nn.Module):
         c_sims = torch.einsum("hsd,hzd->hsz", c_normed, c_normed)
         c_dists = torch.norm(c.unsqueeze(2) - c.unsqueeze(1), dim=-1)
         
-        # Vector norms
         vec_norms = torch.clamp(torch.norm(vecs, dim=-1), min=eps)
         vec_hat_norms = torch.clamp(torch.norm(vecs_hat, dim=-1), min=eps)
-        
-        # Errors and relative errors
+    
         errs = torch.sqrt(errs2)
         relative_errs = torch.clamp(errs / vec_norms, min=errmin, max=errmax)
         
-        # Probability distribution and threshold out-of-bounds
         probs = c_count / torch.sum(c_count, dim=-1, keepdim=True)
         c_thresh_oob = (c_count < 1.0) | (c_count > 1_000_000)
         c_thresh_oob = c_thresh_oob.float()
@@ -322,7 +300,6 @@ class LearnableVQ(nn.Module):
         up = torch.triu(ones)
         low = torch.tril(ones, diagonal=-1)
         
-        # Metrics calculation
         metrics = dict(
             c_sim_min=torch.min(low * c_sims + maskval * up),
             c_sim_mean=torch.sum(low * c_sims, dim=(1, 2)) / torch.sum(low, dim=(1, 2)),
@@ -555,7 +532,6 @@ class VQAttention(nn.Module):
         else:
             present_doc_ids = present_doc_ids
         
-        # Quantize keys, compute metrics, commit loss, and codebook surrogate loss
         vq_output_dict = self.quantizer(present_k, vq_spec=vq_spec)
         present_z = vq_output_dict["shortcodes"]
         present_k_hat = vq_output_dict["quantized"]
@@ -563,7 +539,6 @@ class VQAttention(nn.Module):
         l_codebook = vq_output_dict["l_codebook"]
         metrics = vq_output_dict["metrics"]
 
-        # Concatenate sliding window cache k/v onto current block
         xlcache = state["xlcache"]
         aggcache = state["aggcache"]
         recent_z = torch.cat([xlcache["z"], present_z], dim=-1)
@@ -571,17 +546,14 @@ class VQAttention(nn.Module):
         recent_v = torch.cat([xlcache["v"], present_v], dim=-2)
         recent_doc_ids = torch.cat([xlcache["doc_ids"], present_doc_ids], dim=-1)
 
-        # Compute xl bias helpers
         xl_r, xl_u, xl_v = self.get_xl_helpers()
 
-        # Compute aggcache scores
         c = self.quantizer.get_codebook()
         cache_scores = torch.einsum("bhlk,hsk->bhls", present_q + xl_u, c)
         cache_biases = VQAttention.get_agg_biases(aggcache["lower"])
         cache_biases = cache_biases.unsqueeze(-2)
         cache_scores += cache_biases
 
-        # Compute recent scores (present and xlcache)
         recent_scores_ac = torch.einsum("bhlk,bhwk->bhlw", present_q + xl_u, recent_k_hat)
         recent_scores_bd = torch.einsum("bhlk,hwk->bhlw", present_q + xl_v, xl_r)
         recent_scores_bd = VQAttention.rel_shift(recent_scores_bd)
@@ -610,7 +582,6 @@ class VQAttention(nn.Module):
         cache_a = torch.exp(cache_scores)
         recent_a = torch.exp(recent_scores)
 
-        # Compute per-query normalizer d
         d = torch.sum(recent_a, dim=-1)
         if self.config.agg_cache:
             d += torch.sum(cache_a, dim=-1)
@@ -735,14 +706,12 @@ class TransformerLayer(nn.Module):
         r1 = attn1_output_dict.pop("res")
         assert r1.shape == (dims['B'], dims['L'], dims['D'])
         x += self.droplyr1(r1)
-        # attn1_output_dict = {k: torch.mean(v, dim=0) for k, v in attn1_output_dict.items()}
 
         attn2_input_dict = {'input_features': x, 'doc_ids': doc_ids, 'vq_spec': vq_spec}
         attn2_state, attn2_output_dict = self.scanned_attn2(state2, attn2_input_dict)
         r2 = attn2_output_dict.pop("res")
         assert r2.shape == (dims['B'], dims['L'], dims['D'])
         x += self.droplyr2(r2)
-        # attn2_output_dict = {k: torch.mean(v, dim=0) for k, v in attn2_output_dict.items()}
 
         l_commit = attn1_output_dict.pop("l_commit") + attn2_output_dict.pop("l_commit")
         l_codebook = attn1_output_dict.pop("l_codebook") + attn2_output_dict.pop("l_codebook")
